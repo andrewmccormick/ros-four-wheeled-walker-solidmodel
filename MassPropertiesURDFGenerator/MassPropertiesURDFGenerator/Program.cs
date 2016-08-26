@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace MassPropertiesURDFGenerator
 {
@@ -17,9 +15,7 @@ namespace MassPropertiesURDFGenerator
                     < xacro:property name = "proprerty_name" value = "0.01" />
              */
 
-            string xacroPropertyTemplate = " <xacro:property name=\"{0}\" value=\"{1:F15}\" /> \n";
-
-
+            string xacroPropertyTemplate = " <xacro:property name=\"{0}\" value=\"{1:F15}\" />";
 
             if(set.IsValid())
             {
@@ -30,6 +26,7 @@ namespace MassPropertiesURDFGenerator
                 result.Add(String.Format(xacroPropertyTemplate, (partName + "_MoI_YY"), set.MoI_YY()));
                 result.Add(String.Format(xacroPropertyTemplate, (partName + "_MoI_YZ"), set.MoI_YZ()));
                 result.Add(String.Format(xacroPropertyTemplate, (partName + "_MoI_ZZ"), set.MoI_ZZ()));
+                result.Add(" "); //Add an empty line 
             }
             else
             {
@@ -43,15 +40,17 @@ namespace MassPropertiesURDFGenerator
         {
             /*  Open the model doc extension object
                 I think they just made this so that they didnt have to change the original model object interface?
-                Their API is a shit show...                                                                            */
+                Their API is a piece of work...                                                                            */
             SldWorks.ModelDocExtension docExtension = doc.Extension;
 
             /*  One option is to use the GetMassProperties function,
-                but this will only return mass properties about the centre of mass, aligned with the assemblies default coordinate system
-                see: http://help.solidworks.com/2015/English/api/sldworksapi/SOLIDWORKS.Interop.sldworks~SOLIDWORKS.Interop.sldworks.IModelDocExtension~GetMassProperties.html
+             *  but this will only return mass properties about the centre of mass, aligned with the assemblies default coordinate system
+             *  see: http://help.solidworks.com/2015/English/api/sldworksapi/SOLIDWORKS.Interop.sldworks~SOLIDWORKS.Interop.sldworks.IModelDocExtension~GetMassProperties.html
              */
-            /*  Instead, we probably want to create our own MassProperties object
-                see: http://help.solidworks.com/2015/English/api/sldworksapi/SolidWorks.Interop.sldworks~SolidWorks.Interop.sldworks.IModelDocExtension~CreateMassProperty.html
+            /*  Instead, we probably want to create our own MassProperties object, 
+             *  so that we can get mass properties with respect to a coordinate system
+             *  of our choosing.
+             *  see: http://help.solidworks.com/2015/English/api/sldworksapi/SolidWorks.Interop.sldworks~SolidWorks.Interop.sldworks.IModelDocExtension~CreateMassProperty.html
              */
 
             SldWorks.MassProperty massProperty = docExtension.CreateMassProperty();
@@ -77,12 +76,12 @@ namespace MassPropertiesURDFGenerator
                 double[] momentsOfInertia = massProperty.GetMomentOfInertia((int)SwConst.swMassPropertyMoment_e.swMassPropertyMomentAboutCoordSys);
 
                 result = new MassPropertySet(centreOfMass, mass, momentsOfInertia);
-
             }
             return result;
         }
 
         /* Straight forward method, opens the doc in the way we want it, debugs any errors */
+        //Returns null on failure
         static SldWorks.ModelDoc2 OpenDoc(SldWorks.SldWorks app, string filePath)
         {
             int errors = 0;
@@ -98,18 +97,29 @@ namespace MassPropertiesURDFGenerator
                 ref warnings);
 
             if (errors != 0)
+            {
                 Console.WriteLine("Error: " + errors);
+            }
             if (warnings != 0)
+            {
                 Console.WriteLine("Warnings: " + warnings);
+            }
 
             return doc;
         }
 
+        /*  Takes as input the file name of the index file
+         *  Outputs a list of solidworks files and a list of corresponding titles
+         *  These outputs are parallel (equal size, and each nth item in the first list corresponds to the nth item in the second list)
+         *  
+         *  Some sketchy stuff is done to allow for spaces in file paths. As such, if the index file is malformed, this will not work.
+         */
         static bool ParseIndexFile(string fileName, ref List<string> listOfFiles, ref List<string> listOfMeshTitles)
         {
             listOfFiles.Clear();
             listOfMeshTitles.Clear();
 
+            //Start by opening the file
             System.IO.StreamReader indexStream;
             try
             {
@@ -117,12 +127,11 @@ namespace MassPropertiesURDFGenerator
             }
             catch
             {
-                //Console.WriteLine("Error opening file: " + e.ToString());
-                Console.WriteLine("Error opening file");
-                Console.ReadKey();
+                Console.WriteLine("Error opening index file: " + fileName);
                 return false;
             }
 
+            //Read in from the file
             try
             {
                 int n = Int32.Parse(indexStream.ReadLine());
@@ -138,7 +147,6 @@ namespace MassPropertiesURDFGenerator
                         if (j < strings.Length - 2)
                             fileNameToParse += " ";
                     }
-                        
 
                     listOfFiles.Add(fileNameToParse);
                     listOfMeshTitles.Add(strings.Last());
@@ -173,7 +181,6 @@ namespace MassPropertiesURDFGenerator
                 fileOut.WriteLine("<!-- Programmatically generated content -->");
                 foreach (var tag in tags)
                 {
-                 //   Console.WriteLine(tag);
                     fileOut.WriteLine(tag);
                 }
                 fileOut.Close();
@@ -204,7 +211,7 @@ namespace MassPropertiesURDFGenerator
 
             if (filesToParse.Count != meshTitles.Count)
             {
-                Console.WriteLine("Something amiss: Had different number of files than mesh names.");
+                Console.WriteLine("Something amiss: Had different number of files than mesh names. Maybe the index file specified is malformed?");
                 Console.WriteLine("Num Files: " + filesToParse.Count + ", Num Mesh Names: " + meshTitles.Count);
                 return;
             }
@@ -219,11 +226,15 @@ namespace MassPropertiesURDFGenerator
                     if(doc == null)
                     {
                         Console.WriteLine("Null Doc: " + filesToParse[i]);
+                        Console.WriteLine("Check that the index file specified is properly formed.");
                     }
                     else
                     {
                         MassPropertySet mpSet = GetMassPropertiesFromDoc(doc);
                         xmlTags.AddRange(GenerateXMLTags(meshTitles[i], mpSet));
+                        /*  It makes the most sense to close the solidworks document at this point...
+                         *  but for some reason that was giving errors... maybe something about lazy loading?        
+                         *  So instead we leave them all open until we are done with them                         */
                        // doc.Close();
                     }
 
@@ -234,15 +245,11 @@ namespace MassPropertiesURDFGenerator
                 Console.WriteLine("Problem while reading from solidworks files");
             }
 
-            
             swApp.ExitApp();
             swApp = null;
 
             Console.WriteLine("Outputting to xacro");
             OutputToXacroFile(args[1], xmlTags);
-
-            //Console.WriteLine("\nPress any key to quit");
-            //Console.ReadKey();
         }
     }
 }
